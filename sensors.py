@@ -16,6 +16,9 @@ from adafruit_mcp3421.analog_in import AnalogIn
 from PIL import Image, ImageDraw, ImageFont
 import adafruit_ssd1306 # display
 
+from config import Config
+config = Config()
+name = config['general']['name']  
 
 class ShutdownTime(Exception):
     """Raised when the shutdown time is reached. This time will change on reboot"""
@@ -461,7 +464,9 @@ class WittyPi():
 class Sensor:
     # dictionary of sensor data intrinsict for each sensor type
     data_dict ={} 
+    data_dict['name'] = []
     data_dict['time'] = []
+
 
     # Create library object using our Bus I2C port
     i2c = board.I2C()  # uses board.SCL and board.SDA
@@ -604,26 +609,6 @@ class Display:
         self._disp.image(image)
         self._disp.show()
 
-    def display_time(self):
-        if not self.enabled:
-            return
-
-        image = Image.new('1', (self.width, self.height))
-        draw = ImageDraw.Draw(image)
-        
-        # Clear the image buffer
-        draw.rectangle((0, 0, self.width, self.height), outline=0, fill=0)
-
-        # Get the current time
-        current_time = time.strftime('%H:%M:%S')
-        
-        # Draw the time on the image
-        draw.text((0, 1), current_time, font=self.font, fill=255)
-
-        # Display the image
-        self._disp.image(image)
-        self._disp.show()
-
     def display_msg(self, status, img_count=1):
         if not self.enabled:
             return
@@ -637,32 +622,6 @@ class Display:
         
         # Clear the image buffer
         draw.rectangle((0, 0, self.width, self.height), outline=0, fill=0)
-        x, y = 0, 0
-        for item in msg:
-            draw.text((x, y), item, font=self.font, fill=255)
-            y += 14
-        
-        self._disp.image(image)
-        self._disp.show()
-    def display_msg_temp(self, status, img_count=1,temp_dat=None):
-        """
-        Display message method for displaying a message that will contain the information 
-        related to the Pi internal temp 
-        """
-        if not self.enabled:
-            return
-
-        msg = [f'{status}', 
-                time.strftime('%Y-%m-%d %H:%M:%S'),
-                f'Img count: {img_count}',
-                f'Temperature C: {temp_dat}']
-        
-        image = Image.new('1', (self.width, self.height))
-        draw = ImageDraw.Draw(image)
-        
-        # Clear the image buffer
-        draw.rectangle((0, 0, self.width, self.height), outline=0, fill=0)
-
         x, y = 0, 0
         for item in msg:
             draw.text((x, y), item, font=self.font, fill=255)
@@ -707,6 +666,7 @@ class MultiSensor(Sensor):
         Initialize the different sensor classes
         """
         super().__init__()
+        self.unit_name = name
         self._temp_rh = TempRHSensor()
         time.sleep(0.5)
         self._pres = PresSensor()
@@ -718,7 +678,7 @@ class MultiSensor(Sensor):
             self._shutdown_dt = witty.get_shutdown_datetime() 
 
         start_time= datetime.now().strftime('%Y%m%d_%H%M%S')
-        self.filename = f'{path_sensors}sensor_data_{start_time}.csv'# all data is written to this CSV...
+        self.filename = f'{path_sensors}.csv'# all data is written to this CSV...
     def get_shutdown_datetime(self):
         return self._shutdown_dt
 
@@ -732,11 +692,10 @@ class MultiSensor(Sensor):
         """
         # check that time is in proper range based on wittyPi set shutdown time
         if self._shutdown_dt >= date_time:
-            ## Add the image and time to the dictionary
-            #print(date_time)
             time_current_split = str(date_time.strftime("%Y%m%d_%H%M%S"))
             self.data_dict['time'].append(time_current_split)
-            #self.data_dict["image_filename"].append(img_file)
+            self.data_dict["name"].append(self.unit_name)
+
             ## Add Temperature and Humidity
             d_t, d_rh = self._temp_rh.temp_rh_data()
             ## Add Pressure
@@ -796,9 +755,6 @@ class MultiSensor(Sensor):
         print("Finished Denitializing I2C Bus...Reading for Reboot")
 
 if __name__ == "__main__":
-    """
-    Run sensor data acquisition and display it on OLED screen.
-    """
     print("Starting Sensor Monitoring...")
 
     sensors = MultiSensor(path_sensors="/home/pi/data/")
