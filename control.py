@@ -3,13 +3,14 @@ import os
 import sys
 import logging
 from config import Config
-from display import Display
+from sensors import Display
 from sensors import MultiSensor
 from time import sleep
 from datetime import datetime
 import threading
 import time
 import psutil
+import board
 
 """
 Functionality:
@@ -19,8 +20,7 @@ Functionality:
 
 config = Config()
 
-name = config['general']['name']    
-#output_dir = "/home/pi/data/"
+name = config['general']['name']
 output_dir = config['general']['output_dir']
 
 #data_dir = os.path.join(output_dir,name)
@@ -30,10 +30,12 @@ os.makedirs(os.path.join(output_dir, name), exist_ok=True)
 
 # Initialize the sensors...
 ## also initializes the csv file name timestamp
-sensors = MultiSensor(curr_date)
+
+shared_i2c = board.I2C()
+sensors = MultiSensor(curr_date, i2c=shared_i2c)
 
 # Initialize the display
-disp = Display()
+disp = Display(i2c=shared_i2c)
 disp.display_msg('Initializing')
 
 # Configure logging
@@ -47,58 +49,48 @@ logging.info("###################### NEW RUN ##################################"
 print('Logging')
 logging.info("Begin logging data")
 
-time_current = datetime.now()
+# Sync threads
+stop_event = threading.Event()
+
 def sensor_data():
-    # wait for event to be set
-    event.wait()
-    time_current_split = datetime.now()
-    ## add data to sensor dictionary
-    sensors.add_data(time_current_split )
-    # print(f"Sensor Data Acquired: {time_current_split}")
-    #print("Image acquired: ", time_current_split)
-
-    # # Save sensor data to csv immediately:
-    # sensors.append_to_csv()
-
-curr_time = time.time()
-while True:
-
-    try:
-        # Create the Event
-        event =  threading.Event()
-        # set the event
-        event.set()
- 
-        sensor_thread = threading.Thread(target = sensor_data)
-
-        ## get the current time
+    while not stop_event.is_set():
         time_current = datetime.now()
-        time_current_split = str(time_current.strftime("%Y%m%d_%H%M%S"))
+        sensors.add_data(time_current)
+        time.sleep(2)
 
-        sensor_thread.start()
-        sensor_thread.join() 
+sensor_thread = threading.Thread(target = sensor_data)
+sensor_thread.start()
 
-        retry_count = 0
-       
-        # if wanting a delay in saving sensor data:
-        if (time.time()-curr_time) >= 10:
-            print(psutil.cpu_percent(interval=1),"%")
+try:
+    curr_time = time.time()
+
+    while True:
+        readings = sensors.latest_readings 
+
+        if None not in readings.values():
+            disp.display_sensor_data(
+                readings["temperature"],
+                readings["relative_humidity"],
+                readings["pressure"],
+                readings["wind_speed"]
+            )
+
+        if (time.time() - curr_time) >= 10:
+            print(psutil.cpu_percent(interval=1), "% CPU Usage")
             sensors.append_to_csv()
             curr_time = time.time()
-        sleep(.7)
 
-    except KeyboardInterrupt:
-        if len(list(sensors.data_dict.values())[0]) != 0: 
-            # if list is not empty then add data...
-            sensors.append_to_csv()
-        
-        disp.display_msg('Interrupted')
-        sensors.sensors_deinit()
-        logging.info("KeyboardInterrupt")
-        sys.exit()
+except KeyboardInterrupt:
+    stop_event.set()
+    sensor_thread.join()
+    if len(list(sensors.data_dict.values())[0]) != 0: 
+        sensors.append_to_csv()
+    
+    disp.display_msg('Interrupted')
+    logging.info("KeyboardInterrupt")
+    sys.exit()
 
-    except:
-        disp.display_msg('Error')
-        logging.exception("Error recording sensor data")
-        sys.exit()
-
+except:
+    disp.display_msg('Error')
+    logging.exception("Error recording sensor data")
+    sys.exit()

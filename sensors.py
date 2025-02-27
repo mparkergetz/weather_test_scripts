@@ -2,7 +2,11 @@ from datetime import datetime,timedelta
 import os
 import sys
 import time
+
 import socket
+import fcntl
+import struct
+
 import board
 from csv import DictWriter
 
@@ -99,14 +103,7 @@ class WittyPi():
         """
         return ((bcd & 0xF0) >> 4) * 10 + (bcd & 0x0F)
     def weekday_conv(self, val):
-        """Takes input for the value of the weekday computed by
-        the datetime module which sets Monday to 0...
-        https://www.geeksforgeeks.org/weekday-function-of-datetime-date-class-in-python/
-        """
-        if val == 6:
-            return 0
-        else:
-            return val + 1
+        return (val + 1) % 7
     
     def get_current_time(self):
         """
@@ -379,34 +376,36 @@ class WittyPi():
             - Range between start_2 and end_2
             - Range between end_2 and start_1 (current/next day)
         """
+        now = datetime.now()
+        
         start_1 = start_1.split(',')
         end_1 = end_1.split(',')
         # print(start_1)
         start_1 = (int(start_1[0]),int(start_1[1]),int(start_1[2]))
         end_1 = (int(end_1[0]),int(end_1[1]),int(end_1[2]))
-        year = datetime.now().year
-        month=datetime.now().month
-        days = datetime.now().day
+        year = now.year
+        month=now.month
+        days = now.day
         print(f"{year}/{month}/{days}")
         
-        if datetime.now() > datetime(year=year,month=month,day=days,hour=start_1[0],minute=start_1[1],second=start_1[2]) and datetime.now() < datetime(year=year,month=month,day=days,hour=end_1[0],minute=end_1[1],second=end_1[2]):  
+        if now > datetime(year=year,month=month,day=days,hour=start_1[0],minute=start_1[1],second=start_1[2]) and datetime.now() < datetime(year=year,month=month,day=days,hour=end_1[0],minute=end_1[1],second=end_1[2]):  
             # standard operation
             ## SET SHUTDOWN ->  end time
             shutdown_dt = self.get_shutdown_datetime(hr=end_1[0],min=end_1[1],sec=end_1[2])
             ## SET NEXT STARTUP -> (next day)
             self.startup(start_1[0],start_1[1],start_1[2]) # hr,min,sec
 
-        elif datetime.now() < datetime(year=year,month=month,day=days,hour=start_1[0],minute=start_1[1],second=start_1[2]):
+        elif now < datetime(year=year,month=month,day=days,hour=start_1[0],minute=start_1[1],second=start_1[2]):
             # early morning setup (before start time)
             ## SET SHUTDOWN -> IMMEDIATELY
-            dt_now = datetime.now()
+            dt_now = now
             shutdown_dt = self.get_shutdown_datetime(hr=dt_now.hour,min=dt_now.minute,sec=dt_now.second)
             ## SET NEXT STARTUP -> (current day)
             self.startup_curr(start_1[0],start_1[1],start_1[2])
         else: 
             # late night setup (time is later than end time)
             ## SET SHUTDOWN -> IMMEDIATELY
-            dt_now = datetime.now()
+            dt_now = now
             shutdown_dt = self.get_shutdown_datetime(hr=dt_now.hour,min=dt_now.minute,sec=dt_now.second)
             ## SET NEXT STARTUP -> (next day)
             self.startup(start_1[0],start_1[1],start_1[2])
@@ -462,18 +461,10 @@ class WittyPi():
                     print(f"An error occurred while appending to the CSV file: {e}")
 
 class Sensor:
-    # dictionary of sensor data intrinsict for each sensor type
-    data_dict ={} 
-    data_dict['name'] = []
-    data_dict['time'] = []
-
-
-    # Create library object using our Bus I2C port
-    i2c = board.I2C()  # uses board.SCL and board.SDA
-    def __init__(self, device = None):
-
-        ## name of sensor
-        self.sensor_device = device
+    data_dict = {"name": [], "time": []}
+    def __init__(self, device=None, i2c=None):
+         self.i2c = i2c if i2c is not None else board.I2C()
+         self.sensor_device = device
 
     def get_data(self,sensor_type):
         """
@@ -482,6 +473,7 @@ class Sensor:
         """
         data = getattr(self.sensor_device,sensor_type) # object, attribute
         return data
+
     def add_data(self,sensor_type):
         """
         Add data into the dictionary under the key of the sensor type
@@ -490,13 +482,9 @@ class Sensor:
         """
         data = self.get_data(sensor_type)
         ## check to see if the key exists first and if it does then add to it
-        if sensor_type not in self.data_dict.keys():
-            self.data_dict[sensor_type] = [data]
-        ## if key doesn't exist then create
-        else:
-            self.data_dict[sensor_type].append(data)
-            
+        self.data_dict.setdefault(sensor_type, []).append(data)
         return data
+
     def display(self):
         """
         Display the sensor dictionary
@@ -504,17 +492,14 @@ class Sensor:
         print("Sensor Data")
         d = self.data_dict
         print(d)
-    # def reset_dict(self):
-    #     """
-    #     reset the dictionary
-    #     """
-    #     return
+
     def sensor_deinit(self):
         self.i2c.deinit() 
 
 class TempRHSensor(Sensor):
-    def __init__(self):
-        super().__init__(adafruit_sht31d.SHT31D(self.i2c))
+    def __init__(self, i2c=None):
+        super().__init__(adafruit_sht31d.SHT31D(i2c if i2c else board.I2C()), i2c)
+
 
         self.sensor_types = ['temperature','relative_humidity']
     def temp_rh_data(self):
@@ -525,8 +510,8 @@ class TempRHSensor(Sensor):
         return data1,data2
 
 class PresSensor(Sensor):
-    def __init__(self):
-        super().__init__(adafruit_bmp3xx.BMP3XX_I2C(self.i2c))
+    def __init__(self, i2c=None):
+        super().__init__(adafruit_bmp3xx.BMP3XX_I2C(i2c if i2c else board.I2C()), i2c)
         
         self.sensor_types = ['pressure']
     def pressure_data(self):
@@ -543,8 +528,8 @@ def adc_to_wind_speed(val):
     return (corrected_voltage - 0.4) * (32.4 / (2.0 - 0.4))  # Linear mapping
 
 class WindSensor(Sensor):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, i2c=None):
+        super().__init__(i2c=i2c)
         self.adc = ADC.MCP3421(self.i2c, gain=1, resolution=18, continuous_mode=True)
         self.adc_channel = AnalogIn(self.adc)
 
@@ -554,25 +539,20 @@ class WindSensor(Sensor):
 
     def add_data(self, sensor_type="wind_speed"):
         data = self.get_data(sensor_type)
-        
-        # Add to dictionary
-        if sensor_type not in self.data_dict.keys():
-            self.data_dict[sensor_type] = [data]
-        else:
-            self.data_dict[sensor_type].append(data)
+        self.data_dict.setdefault(sensor_type, []).append(data) # Add to dictionary
         return data
 
 class Display:
     """
     Display info and status
     """
-    def __init__(self):
+    def __init__(self, i2c=None):
         self.width = 128
         self.height = 64
         self.font = ImageFont.load_default()
         self.enabled = True  # Initialize as True, will be set to False on error
         self.ip = self.get_ip_address()
-        self._i2c = board.I2C()
+        self._i2c = i2c if i2c is not None else board.I2C()
         try:
             self._disp = adafruit_ssd1306.SSD1306_I2C(self.width,self.height, self._i2c)
             self._disp.width = self.width
@@ -589,7 +569,7 @@ class Display:
             return
 
         msg = [
-            time.strftime('%Y-%m-%d %H:%M:%S'),
+            time.strftime('%Y-%m-%d      %H:%M:%S'),
             f'Temp: {temperature:.1f} C',
             f'Humidity: {humidity:.1f} %',
             f'Pressure: {pressure:.1f} hPa',
@@ -604,7 +584,7 @@ class Display:
         x, y = 0, 0
         for item in msg:
             draw.text((x, y), item, font=self.font, fill=255)
-            y += 14 
+            y += 12 
 
         self._disp.image(image)
         self._disp.show()
@@ -613,14 +593,14 @@ class Display:
         if not self.enabled:
             return
 
-        msg = [f'{status}', 
-                time.strftime('%Y-%m-%d %H:%M:%S'),
-                f'Img count: {img_count}']
+        msg = [f"{time.strftime('%Y-%m-%d      %H:%M:%S')}",
+                f'{status}',
+                f'IP: {self.ip}'
+                ]
 
         image = Image.new('1', (self.width, self.height))
         draw = ImageDraw.Draw(image)
         
-        # Clear the image buffer
         draw.rectangle((0, 0, self.width, self.height), outline=0, fill=0)
         x, y = 0, 0
         for item in msg:
@@ -637,58 +617,60 @@ class Display:
         self._disp.image(image)
         self._disp.show()
 
-
-    def get_ip_address(self):
+    def get_ip_address(self, interface="eth0"):
+        """
+        Get the local IP address of a specific network interface (default: eth0).
+        Falls back to wlan0 if eth0 is unavailable.
+        """
         try:
-            hostname = socket.gethostname()
-            result = os.popen(f"ifconfig eth0").read()
-            IPAddr = result.split("inet ")[1].split()[0]
-            return f'{hostname}@{IPAddr}'
-        except:
-            return "Unknown"
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            ip_addr = fcntl.ioctl(
+                s.fileno(),
+                0x8915,  # SIOCGIFADDR (Get interface address)
+                struct.pack('256s', bytes(interface[:15], "utf-8"))
+            )[20:24]
+
+            return f"{socket.inet_ntoa(ip_addr)}"
+
+        except OSError:
+            if interface == "eth0":
+                return self.get_ip_address("wlan0")  # Try Wi-Fi if Ethernet fails
+            return "Unknown"  # No network connection
+
     def disp_deinit(self):
-        """
-        Deinitialize the battery monitor and the display
-        """
-        # self._batt.sensor_deinit()
         self._i2c.deinit()
 
 class MultiSensor(Sensor):
     """
     Class that holds the various different sensors for acquiring data
-
-    This will reduce the amount of complexity in the control script.
-
-    It also allows for the saving of all sensor data to csv
     """
-    def __init__(self,path_sensors):
+    def __init__(self, path_sensors, i2c=None):
         """
         Initialize the different sensor classes
         """
-        super().__init__()
+        super().__init__(i2c=i2c)
         self.unit_name = name
-        self._temp_rh = TempRHSensor()
-        time.sleep(0.5)
-        self._pres = PresSensor()
-        time.sleep(0.5)
-        self._ws = WindSensor()
-        time.sleep(0.5)
+        self._temp_rh = TempRHSensor(i2c=i2c)
+        self._pres = PresSensor(i2c=i2c)
+        self._ws = WindSensor(i2c=i2c)
 
         with WittyPi() as witty:
             self._shutdown_dt = witty.get_shutdown_datetime() 
 
         start_time= datetime.now().strftime('%Y%m%d_%H%M%S')
         self.filename = f'{path_sensors}.csv'# all data is written to this CSV...
-    def get_shutdown_datetime(self):
-        return self._shutdown_dt
+
+        self.latest_readings = {
+            "temperature": None, "relative_humidity": None,
+            "pressure": None, "wind_speed": None
+        }
+
+    # def get_shutdown_datetime(self):
+    #     return self._shutdown_dt
 
     def add_data(self,date_time):
         """
-        Similar to the prior classes this method will
-        focus on adding the data to the sensor data dictionary
-
-        However, this method essentially just calls all of the sensor 
-        data acquisition methods.
+        Collect sensor data, store it in the dictionary, and update latest readings.
         """
         # check that time is in proper range based on wittyPi set shutdown time
         if self._shutdown_dt >= date_time:
@@ -697,23 +679,15 @@ class MultiSensor(Sensor):
             self.data_dict["name"].append(self.unit_name)
 
             ## Add Temperature and Humidity
-            d_t, d_rh = self._temp_rh.temp_rh_data()
-            ## Add Pressure
-            d_pres = self._pres.pressure_data()
-            ## Add Wind Speed
-            d_ws = self._ws.add_data()
+            self.latest_readings["temperature"], self.latest_readings["relative_humidity"] = self._temp_rh.temp_rh_data()
+            self.latest_readings["pressure"] = self._pres.pressure_data()
+            self.latest_readings["wind_speed"] = self._ws.add_data()
         else:
             raise ShutdownTime
-        ## Get the cuurrent data
-        #print("Current Data")
-        #self.display() # displays all data using the sensor display method
-        #return d_t, d_rh, d_lux, d_v, d_ir, d_fs
-    
+
     def append_to_csv(self):
         """
-        Create and or append the sensor data to the csv file
-
-        ADD into the CSVfile the image name as well which is going to require a function input...
+        Write collected sensor data to CSV file.
         """
         if not os.path.exists(self.filename):
             # create the csv with headers..
@@ -724,28 +698,40 @@ class MultiSensor(Sensor):
             try:
                 # Try to pass the dictionary into the csv 
                 csv_writer = DictWriter(data_file, fieldnames =self.data_dict.keys())
-                #print(self.data_dict.values())
-                # first got the length of the list...
-                len_list = len(list(self.data_dict.values())[0])
-                # looping over each time instance:
+                rows = []
+                len_list = len(next(iter(self.data_dict.values())))
                 for t in range(len_list):
-                    row_data = {}
-                    for k in self.data_dict.keys():
-                        # add data at this time for sensor 'k' to dictionary
-                        row_data[k] = self.data_dict[k][t]
-                    # write this row...of data for the timestep...
-                    # before the next time instance write what we have to csv
-                    csv_writer.writerow(row_data) # appends data to the headers
-                
-                # reset the data_dict
+                    rows.append({k: self.data_dict[k][t] for k in self.data_dict.keys()})
+                csv_writer.writerows(rows)
+                # Then reset data_dict keys
                 for k in self.data_dict:
                     self.data_dict[k] = []
-                print("CLEAR!")
+
+
+                # # first got the length of the list...
+
+
+                # len_list = len(list(self.data_dict.values())[0])
+                # # looping over each time instance:
+                # for t in range(len_list):
+                #     row_data = {}
+                #     for k in self.data_dict.keys():
+                #         # add data at this time for sensor 'k' to dictionary
+                #         row_data[k] = self.data_dict[k][t]
+                #     # write this row...of data for the timestep...
+                #     # before the next time instance write what we have to csv
+                #     csv_writer.writerow(row_data) # appends data to the headers
+                
+                # # reset the data_dict
+                # for k in self.data_dict:
+                #     self.data_dict[k] = []
+                print("~*csv updated*~")
                 # print(self.data_dict)
                 #print(self.data_dict)
             ## FIGURE OUT MORE ON RAISING EXCEPTIONS AND STUFF...
             except Exception as e:
                 print(f"An error occurred while appending to the CSV file: {e}")
+
     def sensors_deinit(self):
         print("Deinitializing I2C Bus")
         self._temp_rh.sensor_deinit()
@@ -757,8 +743,9 @@ class MultiSensor(Sensor):
 if __name__ == "__main__":
     print("Starting Sensor Monitoring...")
 
-    sensors = MultiSensor(path_sensors="/home/pi/data/")
-    display = Display()
+    shared_i2c = board.I2C()
+    sensors = MultiSensor(path_sensors="/home/pi/data/", i2c=shared_i2c)
+    display = Display(i2c=shared_i2c)
 
     start_time = time.time()  # Initialize start_time before entering the loop
 
