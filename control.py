@@ -11,6 +11,8 @@ import threading
 import time
 import psutil
 import board
+import queue
+
 
 """
 Functionality:
@@ -43,49 +45,80 @@ log_file = "/home/pi/weather.log"
 logging.basicConfig(filename=log_file, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 logging.info("###################### NEW RUN ##################################")
-
-# go to working dir
-#os.chdir(curr_date)
 print('Logging')
 logging.info("Begin logging data")
 
 # Sync threads
 stop_event = threading.Event()
+csv_queue = queue.Queue()
 
 def sensor_data():
     while not stop_event.is_set():
         time_current = datetime.now()
         sensors.add_data(time_current)
-        time.sleep(2)
+        
+        next_run = time.monotonic() + 2  
+        while time.monotonic() < next_run:
+            time.sleep(0.1)
+
+def csv_writer():
+    while not stop_event.is_set() or not csv_queue.empty():
+        try:
+            print(' getting from queue')
+            data = csv_queue.get(timeout=1)  # get data from queue (wait max 1 sec)
+            if data:
+                print('data present, appending')
+                sensors.append_to_csv(data)
+            csv_queue.task_done()
+            print('csv_queue task done')
+        except queue.Empty:
+            print('csv queue empty')
+            pass 
+
 
 sensor_thread = threading.Thread(target = sensor_data)
 sensor_thread.start()
 
+csv_thread = threading.Thread(target=csv_writer, daemon=True)
+csv_thread.start()
+
 try:
-    curr_time = time.time()
+    curr_time = time.monotonic()
+    next_display_time = time.monotonic() + 1
 
     while True:
-        readings = sensors.latest_readings 
+        readings = sensors.latest_readings
+       # GOOD
 
         if None not in readings.values():
-            disp.display_sensor_data(
-                readings["temperature"],
-                readings["relative_humidity"],
-                readings["pressure"],
-                readings["wind_speed"]
-            )
+            if time.monotonic() >= next_display_time:
+                disp.display_sensor_data(
+                    readings["temperature"],
+                    readings["relative_humidity"],
+                    readings["pressure"],
+                    readings["wind_speed"]
+                )
+                next_display_time += 1
 
-        if (time.time() - curr_time) >= 10:
-            print(psutil.cpu_percent(interval=1), "% CPU Usage")
-            sensors.append_to_csv()
-            curr_time = time.time()
+        if time.monotonic() - curr_time >= 10:
+            print(psutil.cpu_percent(interval=None), "% CPU Usage") 
+            csv_queue.put(readings)
+            print('added to queue:', readings)
+            curr_time = time.monotonic()
+
+        time.sleep(0.1) 
 
 except KeyboardInterrupt:
     stop_event.set()
     sensor_thread.join()
-    if len(list(sensors.data_dict.values())[0]) != 0: 
-        sensors.append_to_csv()
     
+    while not csv_queue.empty():
+        data = csv_queue.get()
+        sensors.append_to_csv(data)
+        csv_queue.task_done()
+    
+    csv_thread.join()
+
     disp.display_msg('Interrupted')
     logging.info("KeyboardInterrupt")
     sys.exit()
