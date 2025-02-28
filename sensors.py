@@ -689,46 +689,26 @@ class MultiSensor(Sensor):
         """
         Write collected sensor data to CSV file.
         """
-        if not os.path.exists(self.filename):
-            # create the csv with headers..
+        if not os.path.exists(self.filename):  # create the csv with headers..
             with open(self.filename, 'w') as data_file:
                     csv_writer = DictWriter(data_file, fieldnames =self.data_dict.keys())
-                    csv_writer.writeheader() # write the header...
+                    csv_writer.writeheader()
+
         with open(self.filename, 'a') as data_file:
-            try:
-                # Try to pass the dictionary into the csv 
+            try: # Try to pass the dictionary into the csv 
                 csv_writer = DictWriter(data_file, fieldnames =self.data_dict.keys())
                 rows = []
+                print(self.data_dict)
                 len_list = len(next(iter(self.data_dict.values())))
                 for t in range(len_list):
                     rows.append({k: self.data_dict[k][t] for k in self.data_dict.keys()})
                 csv_writer.writerows(rows)
-                # Then reset data_dict keys
-                for k in self.data_dict:
+            
+                for k in self.data_dict: # reset data_dict keys
                     self.data_dict[k] = []
 
-
-                # # first got the length of the list...
-
-
-                # len_list = len(list(self.data_dict.values())[0])
-                # # looping over each time instance:
-                # for t in range(len_list):
-                #     row_data = {}
-                #     for k in self.data_dict.keys():
-                #         # add data at this time for sensor 'k' to dictionary
-                #         row_data[k] = self.data_dict[k][t]
-                #     # write this row...of data for the timestep...
-                #     # before the next time instance write what we have to csv
-                #     csv_writer.writerow(row_data) # appends data to the headers
-                
-                # # reset the data_dict
-                # for k in self.data_dict:
-                #     self.data_dict[k] = []
                 print("~*csv updated*~")
-                # print(self.data_dict)
-                #print(self.data_dict)
-            ## FIGURE OUT MORE ON RAISING EXCEPTIONS AND STUFF...
+
             except Exception as e:
                 print(f"An error occurred while appending to the CSV file: {e}")
 
