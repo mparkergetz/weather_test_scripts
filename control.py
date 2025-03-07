@@ -9,7 +9,7 @@ from time import sleep
 from datetime import datetime
 import threading
 import time
-import psutil
+#import psutil
 import board
 
 """
@@ -58,11 +58,27 @@ def sensor_data():
         sensors.add_data(time_current)
         time.sleep(2)
 
+def update_display():
+    display_interval = 1
+    while not stop_event.is_set():
+        readings = sensors.latest_readings
+        if None not in readings.values():
+            disp.display_sensor_data(
+                readings["temperature"],
+                readings["relative_humidity"],
+                readings["pressure"],
+                readings["wind_speed"]
+            )
+        time.sleep(display_interval)
+
 sensor_thread = threading.Thread(target = sensor_data)
 sensor_thread.start()
 
+display_thread = threading.Thread(target=update_display)
+display_thread.start()
+
 try:
-    curr_time = time.time()
+    curr_time = time.monotonic()
 
     while True:
         readings = sensors.latest_readings 
@@ -75,14 +91,17 @@ try:
                 readings["wind_speed"]
             )
 
-        if (time.time() - curr_time) >= 10:
-            print(psutil.cpu_percent(interval=1), "% CPU Usage")
+        if (time.monotonic() - curr_time) >= 10:
+            #print(psutil.cpu_percent(interval=1), "% CPU Usage")
             sensors.append_to_csv()
-            curr_time = time.time()
+            curr_time = time.monotonic()
+        
+        time.sleep(0.1)
 
 except KeyboardInterrupt:
     stop_event.set()
     sensor_thread.join()
+    display_thread.join()
     if len(list(sensors.data_dict.values())[0]) != 0: 
         sensors.append_to_csv()
     
@@ -91,6 +110,8 @@ except KeyboardInterrupt:
     sys.exit()
 
 except:
+    stop_event.set()
+    display_thread.join()
     disp.display_msg('Error')
     logging.exception("Error recording sensor data")
     sys.exit()
